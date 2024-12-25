@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { addResource, emptyManager, loadAllResources } from "$lib/loader";
 	import { createContext, engineRender } from '$lib/engine';
 	import { onMount } from 'svelte';
 
@@ -7,12 +8,24 @@
 	let innerHeight: number = 0;
 
 	onMount(async () => {
-		const context = createContext(canvas);
+		let manager = emptyManager();
+
+		addResource(manager, "utf-8", "frag", "http://localhost:5173/shaders/frag.wgsl")
+		addResource(manager, "utf-8", "vert", "http://localhost:5173/shaders/vert.wgsl")
+
+		// Loads all resources
+		await loadAllResources(manager, (p, r, _) => {console.log(r.name, p)})
+
+		const context = await createContext(canvas, manager);
 
 		const render = () => {
-			if (innerWidth != context.canvas.width || innerHeight != context.canvas.height) {
-				context.canvas.width = innerWidth;
-				context.canvas.height = innerHeight;
+			if (!canvas) {
+				return;
+			}
+
+			if (innerWidth != canvas.width || innerHeight != canvas.height) {
+				canvas.width = innerWidth;
+				canvas.height = innerHeight;
 			}
 
 			engineRender(context, 2);

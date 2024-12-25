@@ -1,118 +1,56 @@
 /**
  * @module: Engine
- * @description: The engine core for rendering crazy stuff in my website using WebGPU.
+ * @description: The engine core for rendering crazy stuff in my website.
  */
 
-const segments = 50;
+import * as gem from "./geometry";
+import type { Manager } from "./loader";
+
 
 // Type for the canvas and WebGPU context
 type Context = {
-	device: GPUDevice;
 	canvas: HTMLCanvasElement;
+	device: GPUDevice;
+	context: GPUCanvasContext;
 	pipeline: GPURenderPipeline;
 	buffers: GPUBuffer[];
+	binding: GPUBindGroup[];
 };
 
-// Defines the type of a point.
-type Point = [number, number];
-
-// Type for a bezier curve with 3 control points
-type BezierCurve = {
-	p0: Point;
-	p1: Point;
-	p2: Point;
+/**
+ * Creates and initializes a WebGPU buffer.
+ * @param device - GPUDevice instance.
+ * @returns A WebGPU buffer object.
+ */
+export const createBuffer = (
+	device: GPUDevice,
+	size: number,
+	usage: GPUBufferUsageFlags
+): GPUBuffer => {
+	const bezierBuffer = device.createBuffer({
+		size: size,
+		usage: usage
+	});
+	return bezierBuffer;
 };
 
-// Basic vertex shader
-const vertexShaderSource = `
-  @stage(vertex)
-  fn main(
-    @location(0) a_position: vec2<f32>,
-    @builtin(vertex_idx) vertex_idx: u32
-  ) -> @builtin(position) vec4<f32> {
-    var resolution: vec2<f32> = vec2<f32>(640.0, 480.0); // Set resolution
-    var zeroToOne = a_position / resolution;
-    return vec4<f32>(zeroToOne.x, zeroToOne.y, 0.0, 1.0);
-  }
-`;
-
-// Basic fragment shader
-const fragmentShaderSource = `
-  @stage(fragment)
-  fn main() -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.5, 0.2, 1.0); // orange-ish color
-  }
-`;
-
-// Useful to find the orientation of the triangle.
-const sign = (p1: Point, p2: Point, p3: Point): number =>
-	(p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1]);
-
-const crossProduct = (a: Point, b: Point, c: Point): number =>
-	(b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-
-const isPointInTriangle = (p: Point, a: Point, b: Point, c: Point): boolean => {
-	const [d1, d2, d3] = [sign(p, a, b), sign(p, b, c), sign(p, c, a)];
-	const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
-	const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
-	return !(hasNeg && hasPos); // True if point is inside triangle
-};
-
-const isEar = (a: Point, b: Point, c: Point, points: Point[]): boolean =>
-	crossProduct(a, b, c) >= 0 &&
-	!points.some((p) => p !== a && p !== b && p !== c && isPointInTriangle(p, a, b, c));
-
-const triangulatePolygon = (points: Point[]): Point[][] => {
-	const triangles: Point[][] = [];
-	const polygon = [...points];
-
-	while (polygon.length > 3) {
-		for (let i = 0; i < polygon.length; i++) {
-			const prev = polygon[(i - 1 + polygon.length) % polygon.length];
-			const current = polygon[i];
-			const next = polygon[(i + 1) % polygon.length];
-
-			if (isEar(prev, current, next, polygon)) {
-				triangles.push([prev, current, next]);
-				polygon.splice(i, 1);
-				break;
-			}
-		}
-	}
-
-	triangles.push(polygon);
-
-	return triangles;
-};
-
-function generateBezier(curve: BezierCurve, segments: number): Point[] {
-	const points: Point[] = [];
-	for (let i = 0; i <= segments; i++) {
-		const t = i / segments;
-		const x = (1 - t) * (1 - t) * curve.p0[0] + 2 * (1 - t) * t * curve.p1[0] + t * t * curve.p2[0];
-		const y = (1 - t) * (1 - t) * curve.p0[1] + 2 * (1 - t) * t * curve.p1[1] + t * t * curve.p2[1];
-		points.push([x, y]);
-	}
-	return points;
-}
-
-// Create a WebGPU buffer
-export const createBuffer = (device: GPUDevice, data: Float32Array): GPUBuffer => {
-	return device
-		.createBuffer({
-			size: data.byteLength,
-			usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-			mappedAtCreation: true
-		})
-		.setSubData(0, data);
-};
-
-// Initializes buffers with Bezier data
-export const initBuffers = (device: GPUDevice, curves: BezierCurve[]): GPUBuffer => {
+/**
+ * Writes position data to a buffer based on Bézier curves and triangulation.
+ * @param device - GPUDevice instance.
+ * @param bezierBuffer - The buffer to store position data.
+ * @param curves - Array of Bézier curves.
+ */
+export const writePositionData = (
+	device: GPUDevice,
+	bezierBuffer: GPUBuffer,
+	curves: gem.BezierCurve[]
+): void => {
 	const positions: number[] = [];
+
 	for (const curve of curves) {
-		const curvePoints = generateBezier(curve, segments);
-		const triangles = triangulatePolygon(curvePoints);
+		const curvePoints = gem.generateBezier(curve, 200);
+		const triangles = gem.triangulatePolygon(curvePoints);
+
 		for (const triangle of triangles) {
 			for (const point of triangle) {
 				positions.push(point[0], point[1]);
@@ -120,26 +58,166 @@ export const initBuffers = (device: GPUDevice, curves: BezierCurve[]): GPUBuffer
 		}
 	}
 
-	return createBuffer(device, new Float32Array(positions));
+	const bufferData = new Float32Array(positions);
+	device.queue.writeBuffer(bezierBuffer, 0, bufferData);
 };
 
-// Create the pipeline with shaders
-export const createPipeline = (device: GPUDevice): GPURenderPipeline => {
-	const vertexShader = device.createShaderModule({ code: vertexShaderSource });
-	const fragmentShader = device.createShaderModule({ code: fragmentShaderSource });
+/**
+ * Initializes and returns a buffer with position data.
+ * @param device - GPUDevice instance.
+ * @param curves - Array of Bézier curves.
+ * @returns Initialized WebGPUBuffer for storing shape vertices.
+ */
+export const initBuffers = (device: GPUDevice, curves: gem.BezierCurve[]): GPUBuffer => {
+	const bezierBuffer = createBuffer(
+		device,
+		1024 * 10,
+		GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+	);
+	writePositionData(device, bezierBuffer, curves);
+
+	return bezierBuffer;
+};
+
+const quadraticInterpolation = (x: number, y: number, t: number) =>
+	x + (y - x) * (0.5 - 0.5 * Math.cos(t * Math.PI));
+
+/**
+ * Renders a shape using the provided WebGPU context and initialized shaders.
+ * @param context - The rendering context containing canvas and GPU program.
+ */
+export const engineRender = (context: Context, curveCount: number) => {
+	const { device, context: canvasContext, pipeline, buffers } = context;
+
+	canvasContext.configure({
+		device: device,
+		format: 'bgra8unorm',
+		usage: GPUTextureUsage.RENDER_ATTACHMENT
+	});
+
+	const commandEncoder = device.createCommandEncoder();
+
+	const passDescriptor: GPURenderPassDescriptor = {
+		colorAttachments: [
+			{
+				view: canvasContext.getCurrentTexture().createView(),
+				clearValue: [0.1, 0.1, 0.1, 1.0],
+				loadOp: 'clear',
+				storeOp: 'store'
+			}
+		]
+	};
+
+	device.queue.writeBuffer(
+		buffers[1],
+		0,
+		new Float32Array([context.canvas.width, context.canvas.height]).buffer,
+		0,
+		8
+	);
+
+	const passEncoder = commandEncoder.beginRenderPass(passDescriptor);
+	passEncoder.setPipeline(pipeline);
+	passEncoder.setBindGroup(0, context.binding[0]);
+	passEncoder.setVertexBuffer(0, buffers[0]);
+
+	const posX = 0;
+	const posY = 0;
+
+	const height = 500;
+	const width = 600;
+
+	const initPos = posX - width / 2;
+	const endPos = posX + width / 2;
+
+	device.queue.writeBuffer(buffers[2], 0, new Float32Array([posX, posY]).buffer, 0, 8);
+
+	const curves: gem.BezierCurve[] = [
+		{
+			p0: [endPos, posY],
+			p1: [posX, quadraticInterpolation(posY, posY + height, Math.sin(performance.now() / 100))],
+			p2: [initPos, posY]
+		},
+		{
+			p0: [initPos, posY],
+			p1: [posX, quadraticInterpolation(posY, posY - height, Math.sin(performance.now() / 100))],
+			p2: [endPos, posY]
+		}
+	];
+
+	writePositionData(device, buffers[0], curves);
+
+	for (let i = 0; i < curveCount; i++) {
+		passEncoder.draw((200 - 1) * 3, 1, i * (200 - 1) * 3, 0);
+	}
+
+	passEncoder.end();
+	device.queue.submit([commandEncoder.finish()]);
+};
+
+/**
+ * Creates and compiles a shader module.
+ * @param device - GPUDevice instance.
+ * @param type - Shader type (vertex or fragment).
+ * @param source - WGSL source code for the shader.
+ * @returns Compiled GPUShaderModule.
+ */
+export const createShader = (device: GPUDevice, type: string, source: string): GPUShaderModule => {
+	const shaderModule = device.createShaderModule({
+		code: source
+	});
+	return shaderModule;
+};
+
+/**
+ * Creates and links a WebGPU program with vertex and fragment shaders.
+ * @param device - GPUDevice instance.
+ * @param vertexSource - WGSL source code for the vertex shader.
+ * @param fragmentSource - WGSL source code for the fragment shader.
+ * @returns Linked GPURenderPipeline.
+ */
+export const createPipeline = (
+	device: GPUDevice,
+	vertexSource: string,
+	fragmentSource: string
+): [GPURenderPipeline, GPUBindGroupLayout] => {
+	const vertexShader = createShader(device, 'vertex', vertexSource);
+	const fragmentShader = createShader(device, 'fragment', fragmentSource);
+
+	const layout = device.createBindGroupLayout({
+		entries: [
+			{
+				binding: 0,
+				visibility: GPUShaderStage.VERTEX,
+				buffer: {
+					type: 'uniform'
+				}
+			},
+			{
+				binding: 1,
+				visibility: GPUShaderStage.VERTEX,
+				buffer: {
+					type: 'uniform'
+				}
+			}
+		]
+	});
 
 	const pipeline = device.createRenderPipeline({
+		layout: device.createPipelineLayout({
+			bindGroupLayouts: [layout]
+		}),
 		vertex: {
 			module: vertexShader,
-			entryPoint: 'main',
+			entryPoint: 'vert_main',
 			buffers: [
 				{
-					arrayStride: 2 * 4, // Each vertex has two components (x, y)
+					arrayStride: 2 * Float32Array.BYTES_PER_ELEMENT, // 2 floats per vertex
 					attributes: [
 						{
-							format: 'float2',
+							format: 'float32x2' as GPUVertexFormat, // Correct GPUVertexFormat enum value for 2D positions
 							offset: 0,
-							shaderLocation: 0
+							shaderLocation: 0 // Attribute location in shader
 						}
 					]
 				}
@@ -147,61 +225,93 @@ export const createPipeline = (device: GPUDevice): GPURenderPipeline => {
 		},
 		fragment: {
 			module: fragmentShader,
-			entryPoint: 'main',
+			entryPoint: 'frag_main',
 			targets: [
 				{
-					format: 'bgra8unorm'
+					format: 'bgra8unorm' // Render target format (standard for color rendering)
 				}
 			]
-		},
-		primitive: {
-			topology: 'triangle-list'
 		}
 	});
 
-	return pipeline;
+	return [pipeline, layout];
 };
 
-// Render function for WebGPU
-export const engineRender = (context: Context, curveCount: number) => {
-	const { device, canvas, pipeline, buffers } = context;
-
-	const commandEncoder = device.createCommandEncoder();
-	const passEncoder = commandEncoder.beginRenderPass({
-		colorAttachments: [
-			{
-				view: canvas.getContext('webgpu').getCurrentTexture().createView(),
-				loadValue: [0.1, 0.1, 0.1, 1.0], // background color
-				storeOp: 'store'
-			}
-		]
-	});
-
-	passEncoder.setPipeline(pipeline);
-	passEncoder.setVertexBuffer(0, buffers[0]);
-
-	for (let i = 0; i < curveCount; i++) {
-		passEncoder.draw(segments * 3, 1, i * (segments - 1) * 3, 0); // draw triangles
+/**
+ * Creates the rendering context for the canvas element, initializes shaders, and sets the canvas size.
+ * @param canvas - HTMLCanvasElement to initialize WebGPU on.
+ * @returns Configured rendering Context for WebGPU drawing.
+ */
+export const createContext = async (canvas: HTMLCanvasElement, manager: Manager): Promise<Context> => {
+	if (!('gpu' in navigator)) {
+		throw new Error('WebGPU not supported on this browser.');
 	}
 
-	passEncoder.end();
-	device.queue.submit([commandEncoder.finish()]);
-};
-
-// Initializes WebGPU device and context
-export const createContext = async (canvas: HTMLCanvasElement): Promise<Context> => {
 	const adapter = await navigator.gpu.requestAdapter();
+
+	if (!adapter) {
+		throw new Error('No appropriate GPUAdapter found.');
+	}
+
+	if (!adapter) throw new Error('WebGPU not supported');
+
 	const device = await adapter.requestDevice();
+	const context = canvas.getContext('webgpu')!;
+
 	canvas.width = window.innerWidth;
 	canvas.height = window.innerHeight;
 
-	const curves: BezierCurve[] = [
+	const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+	context.configure({
+		device: device,
+		format: canvasFormat
+	});
+
+	const curves: gem.BezierCurve[] = [
 		{ p0: [600, 300], p1: [350, 600], p2: [100, 300] },
 		{ p0: [100, 300], p1: [350, 0], p2: [600, 300] }
 	];
 
-	const pipeline = createPipeline(device);
+	let vertexShaderSource = manager.resources.get("vert")?.data as string;
+	let fragmentShaderSource = manager.resources.get("frag")?.data as string;
+
+	const [pipeline, layout] = createPipeline(device, vertexShaderSource, fragmentShaderSource);
 	const buffer = initBuffers(device, curves);
 
-	return { device, canvas, pipeline, buffers: [buffer] };
+	const uniformBuffer = device.createBuffer({
+		size: 8,
+		usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+	});
+
+	const positionBuffer = device.createBuffer({
+		size: 8,
+		usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+	});
+
+	const uniformBindGroup = device.createBindGroup({
+		layout,
+		entries: [
+			{
+				binding: 0,
+				resource: {
+					buffer: uniformBuffer
+				}
+			},
+			{
+				binding: 1,
+				resource: {
+					buffer: positionBuffer
+				}
+			}
+		]
+	});
+
+	return {
+		canvas,
+		device,
+		context,
+		pipeline,
+		buffers: [buffer, uniformBuffer, positionBuffer],
+		binding: [uniformBindGroup]
+	};
 };
