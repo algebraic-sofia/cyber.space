@@ -14,7 +14,7 @@
 		addResource(manager, "utf-8", "vert", "http://localhost:5173/shaders/vert.wgsl")
 
 		// Loads all resources
-		await loadAllResources(manager, (p, r, _) => {console.log(r.name, p)})
+		await loadAllResources(manager)
 
 		const context = await createContext(canvas, manager);
 
@@ -28,7 +28,7 @@
 				canvas.height = innerHeight;
 			}
 
-			engineRender(context, 2);
+			engineRender(context);
 			requestAnimationFrame(render);
 		};
 

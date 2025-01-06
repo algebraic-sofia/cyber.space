@@ -47,6 +47,21 @@ export const emptyManager = () => ({
 	totalCount: 0,
 });
 
+const toResource = (type: ResourceType, name: string, url: string) => (rawData: ArrayBuffer): Resource => {
+	let data;
+
+	switch (type) {
+		case 'utf-8':
+			data = new TextDecoder('utf-8').decode(rawData);
+			break
+		default:
+			data = rawData;
+			break
+	}
+
+	return ({ name, url, type, loaded: true, data })
+}
+
 /**
  * Fetches a resource from the specified URL and loads its data.
  *
@@ -57,16 +72,7 @@ export const emptyManager = () => ({
 export const loadResource = (type: ResourceType, name: string, url: string): Promise<Resource> =>
 	fetch(url)
 		.then((res) => res.arrayBuffer())
-		.then((rawData) => {
-			let data;
-
-			switch (type) {
-				case 'utf-8': data = new TextDecoder('utf-8').decode(rawData); break
-				default: data = rawData; break
-			}
-
-			return ({ name, url, type, loaded: true, data })
-		});
+		.then(toResource(type, name, url));
 
 /**
  * Adds a new resource to the manager for tracking.
@@ -89,13 +95,14 @@ export const addResource = (manager: Manager, type: ResourceType, name: string, 
  * @param loaded - The new loaded status of the resource.
  * @param manager - The manager to update.
  */
-export const updateResource = (name: string, loaded: boolean, manager: Manager): void => {
-	const resource = manager.resources.get(name);
+export const updateResource = (res: Resource, manager: Manager): void => {
+	const resource = manager.resources.get(res.name);
 
 	if (resource) {
-		if (resource.loaded !== loaded) {
-			resource.loaded = loaded;
-			manager.loadedCount += loaded ? 1 : -1;
+		if (resource.loaded !== res.loaded) {
+			resource.loaded = res.loaded;
+			manager.loadedCount += res.loaded ? 1 : -1;
+			manager.resources.set(res.name, res)
 		}
 	}
 };
@@ -127,13 +134,8 @@ export const loadAllResources = (
 		(promiseChain, resource) =>
 			promiseChain.then(() =>
 				loadResource(resource.type, resource.name, resource.url).then((loadedResource) => {
-					updateResource(loadedResource.name, loadedResource.loaded, manager);
-
-					// Calculate progress and call the callback with it
-					if (callback) {
-						const progress = getProgress(manager);
-						callback(progress, loadedResource, manager);
-					}
+					updateResource(loadedResource, manager);
+					if (callback) callback(getProgress(manager), loadedResource, manager);
 				})
 			),
 		Promise.resolve()

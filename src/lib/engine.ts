@@ -2,10 +2,7 @@
  * @module: Engine
  * @description: The engine core for rendering crazy stuff in my website.
  */
-
-import * as gem from "./geometry";
-import type { Manager } from "./loader";
-
+import type { Manager } from './loader';
 
 // Type for the canvas and WebGPU context
 type Context = {
@@ -18,75 +15,24 @@ type Context = {
 };
 
 /**
- * Creates and initializes a WebGPU buffer.
+ * Creates and initializes a WebGPU buffer for instance data.
  * @param device - GPUDevice instance.
- * @returns A WebGPU buffer object.
+ * @param instanceCount - The number of instances to render.
+ * @returns A WebGPU buffer object for storing instance data.
  */
-export const createBuffer = (
-	device: GPUDevice,
-	size: number,
-	usage: GPUBufferUsageFlags
-): GPUBuffer => {
-	const bezierBuffer = device.createBuffer({
-		size: size,
-		usage: usage
+export const createInstanceBuffer = (device: GPUDevice, instanceCount: number): GPUBuffer => {
+	const instanceBuffer = device.createBuffer({
+		size: instanceCount * 4 * Float32Array.BYTES_PER_ELEMENT, // Each instance has 4 floats
+		usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
 	});
-	return bezierBuffer;
+	return instanceBuffer;
 };
-
-/**
- * Writes position data to a buffer based on Bézier curves and triangulation.
- * @param device - GPUDevice instance.
- * @param bezierBuffer - The buffer to store position data.
- * @param curves - Array of Bézier curves.
- */
-export const writePositionData = (
-	device: GPUDevice,
-	bezierBuffer: GPUBuffer,
-	curves: gem.BezierCurve[]
-): void => {
-	const positions: number[] = [];
-
-	for (const curve of curves) {
-		const curvePoints = gem.generateBezier(curve, 200);
-		const triangles = gem.triangulatePolygon(curvePoints);
-
-		for (const triangle of triangles) {
-			for (const point of triangle) {
-				positions.push(point[0], point[1]);
-			}
-		}
-	}
-
-	const bufferData = new Float32Array(positions);
-	device.queue.writeBuffer(bezierBuffer, 0, bufferData);
-};
-
-/**
- * Initializes and returns a buffer with position data.
- * @param device - GPUDevice instance.
- * @param curves - Array of Bézier curves.
- * @returns Initialized WebGPUBuffer for storing shape vertices.
- */
-export const initBuffers = (device: GPUDevice, curves: gem.BezierCurve[]): GPUBuffer => {
-	const bezierBuffer = createBuffer(
-		device,
-		1024 * 10,
-		GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-	);
-	writePositionData(device, bezierBuffer, curves);
-
-	return bezierBuffer;
-};
-
-const quadraticInterpolation = (x: number, y: number, t: number) =>
-	x + (y - x) * (0.5 - 0.5 * Math.cos(t * Math.PI));
 
 /**
  * Renders a shape using the provided WebGPU context and initialized shaders.
  * @param context - The rendering context containing canvas and GPU program.
  */
-export const engineRender = (context: Context, curveCount: number) => {
+export const engineRender = (context: Context) => {
 	const { device, context: canvasContext, pipeline, buffers } = context;
 
 	canvasContext.configure({
@@ -108,48 +54,14 @@ export const engineRender = (context: Context, curveCount: number) => {
 		]
 	};
 
-	device.queue.writeBuffer(
-		buffers[1],
-		0,
-		new Float32Array([context.canvas.width, context.canvas.height]).buffer,
-		0,
-		8
-	);
-
 	const passEncoder = commandEncoder.beginRenderPass(passDescriptor);
 	passEncoder.setPipeline(pipeline);
-	passEncoder.setBindGroup(0, context.binding[0]);
+
+	// Set the vertex buffer and instance buffer
 	passEncoder.setVertexBuffer(0, buffers[0]);
+	passEncoder.setVertexBuffer(1, buffers[1]);
 
-	const posX = 0;
-	const posY = 0;
-
-	const height = 500;
-	const width = 600;
-
-	const initPos = posX - width / 2;
-	const endPos = posX + width / 2;
-
-	device.queue.writeBuffer(buffers[2], 0, new Float32Array([posX, posY]).buffer, 0, 8);
-
-	const curves: gem.BezierCurve[] = [
-		{
-			p0: [endPos, posY],
-			p1: [posX, quadraticInterpolation(posY, posY + height, Math.sin(performance.now() / 100))],
-			p2: [initPos, posY]
-		},
-		{
-			p0: [initPos, posY],
-			p1: [posX, quadraticInterpolation(posY, posY - height, Math.sin(performance.now() / 100))],
-			p2: [endPos, posY]
-		}
-	];
-
-	writePositionData(device, buffers[0], curves);
-
-	for (let i = 0; i < curveCount; i++) {
-		passEncoder.draw((200 - 1) * 3, 1, i * (200 - 1) * 3, 0);
-	}
+	passEncoder.draw(3, 1, 0);
 
 	passEncoder.end();
 	device.queue.submit([commandEncoder.finish()]);
@@ -180,44 +92,37 @@ export const createPipeline = (
 	device: GPUDevice,
 	vertexSource: string,
 	fragmentSource: string
-): [GPURenderPipeline, GPUBindGroupLayout] => {
+): [GPURenderPipeline] => {
 	const vertexShader = createShader(device, 'vertex', vertexSource);
 	const fragmentShader = createShader(device, 'fragment', fragmentSource);
 
-	const layout = device.createBindGroupLayout({
-		entries: [
-			{
-				binding: 0,
-				visibility: GPUShaderStage.VERTEX,
-				buffer: {
-					type: 'uniform'
-				}
-			},
-			{
-				binding: 1,
-				visibility: GPUShaderStage.VERTEX,
-				buffer: {
-					type: 'uniform'
-				}
-			}
-		]
-	});
-
 	const pipeline = device.createRenderPipeline({
 		layout: device.createPipelineLayout({
-			bindGroupLayouts: [layout]
+			bindGroupLayouts: []
 		}),
+
 		vertex: {
 			module: vertexShader,
 			entryPoint: 'vert_main',
 			buffers: [
 				{
-					arrayStride: 2 * Float32Array.BYTES_PER_ELEMENT, // 2 floats per vertex
+					arrayStride: 2 * Float32Array.BYTES_PER_ELEMENT,
 					attributes: [
 						{
-							format: 'float32x2' as GPUVertexFormat, // Correct GPUVertexFormat enum value for 2D positions
+							format: 'float32x2' as GPUVertexFormat,
 							offset: 0,
-							shaderLocation: 0 // Attribute location in shader
+							shaderLocation: 0
+						}
+					]
+				},
+				{
+					arrayStride: 4 * Float32Array.BYTES_PER_ELEMENT,
+					stepMode: 'instance',
+					attributes: [
+						{
+							format: 'float32x4' as GPUVertexFormat,
+							offset: 0,
+							shaderLocation: 1
 						}
 					]
 				}
@@ -234,7 +139,7 @@ export const createPipeline = (
 		}
 	});
 
-	return [pipeline, layout];
+	return [pipeline];
 };
 
 /**
@@ -242,7 +147,10 @@ export const createPipeline = (
  * @param canvas - HTMLCanvasElement to initialize WebGPU on.
  * @returns Configured rendering Context for WebGPU drawing.
  */
-export const createContext = async (canvas: HTMLCanvasElement, manager: Manager): Promise<Context> => {
+export const createContext = async (
+	canvas: HTMLCanvasElement,
+	manager: Manager
+): Promise<Context> => {
 	if (!('gpu' in navigator)) {
 		throw new Error('WebGPU not supported on this browser.');
 	}
@@ -267,51 +175,48 @@ export const createContext = async (canvas: HTMLCanvasElement, manager: Manager)
 		format: canvasFormat
 	});
 
-	const curves: gem.BezierCurve[] = [
-		{ p0: [600, 300], p1: [350, 600], p2: [100, 300] },
-		{ p0: [100, 300], p1: [350, 0], p2: [600, 300] }
-	];
+	const vertexShaderSource = manager.resources.get('vert')?.data as string;
+	const fragmentShaderSource = manager.resources.get('frag')?.data as string;
 
-	let vertexShaderSource = manager.resources.get("vert")?.data as string;
-	let fragmentShaderSource = manager.resources.get("frag")?.data as string;
+	const [pipeline] = createPipeline(device, vertexShaderSource, fragmentShaderSource);
 
-	const [pipeline, layout] = createPipeline(device, vertexShaderSource, fragmentShaderSource);
-	const buffer = initBuffers(device, curves);
-
-	const uniformBuffer = device.createBuffer({
-		size: 8,
-		usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+	const vertexBuffer = device.createBuffer({
+		size: Float32Array.BYTES_PER_ELEMENT * 2 * 3, // 2 floats, 3 vertices, 2 triangles
+		usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
 	});
 
-	const positionBuffer = device.createBuffer({
-		size: 8,
-		usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+	const instanceBuffer = device.createBuffer({
+		size: Float32Array.BYTES_PER_ELEMENT * 4 * 3, // 4 floats per instance, 2 instances
+		usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
 	});
 
-	const uniformBindGroup = device.createBindGroup({
-		layout,
-		entries: [
-			{
-				binding: 0,
-				resource: {
-					buffer: uniformBuffer
-				}
-			},
-			{
-				binding: 1,
-				resource: {
-					buffer: positionBuffer
-				}
-			}
-		]
-	});
+
+	// Simple triangle
+	device.queue.writeBuffer(
+		vertexBuffer,
+		0,
+		new Float32Array([
+			-0.5 * 0.2, -0.5 * 0.2, 0.5 * 0.2, -0.5 * 0.2, 0 * 0.2, 0.5 * 0.2,
+		])
+	);
+
+	// Instance buffer that moves more triangles
+	device.queue.writeBuffer(
+		instanceBuffer,
+		0,
+		new Float32Array([
+			4.0, 2.0, 0.0, 0.0,  // Instance 1
+			4.0, 2.0, 0.0, 0.0,  // Instance 2
+			4.0, 2.0, 0.0, 0.0,  // Instance 3
+		])
+	);
 
 	return {
 		canvas,
 		device,
 		context,
 		pipeline,
-		buffers: [buffer, uniformBuffer, positionBuffer],
-		binding: [uniformBindGroup]
+		buffers: [vertexBuffer, instanceBuffer],
+		binding: []
 	};
 };

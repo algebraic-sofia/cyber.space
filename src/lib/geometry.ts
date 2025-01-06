@@ -6,18 +6,23 @@
 // Defines the type of a point.
 export type Point = [number, number];
 
-// Type for a bezier curve with 3 control points
-export type BezierCurve = {
-	p0: Point;
-	p1: Point;
-	p2: Point;
-};
+// Arithmetic
 
 export const sign = (p1: Point, p2: Point, p3: Point): number =>
 	(p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1]);
 
 export const crossProduct = (a: Point, b: Point, c: Point): number =>
 	(b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+
+export const quadraticInterpolation = (x: number, y: number, t: number) =>
+	x + (y - x) * (0.5 - 0.5 * Math.cos(t * Math.PI));
+
+// Type for a bezier curve with 3 control points
+export type BezierCurve = {
+	p0: Point;
+	p1: Point;
+	p2: Point;
+};
 
 /**
  * Check if point p is inside the triangle formed by a, b, and c
